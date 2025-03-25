@@ -12,6 +12,7 @@ from rich.markdown import Markdown
 from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
+import aiohttp
 
 # 載入環境變數
 load_dotenv()
@@ -122,15 +123,47 @@ async def call_llm(
             print(f"等待 {retry_delay} 秒後重試...")
             await asyncio.sleep(retry_delay)
 
+def yaml_safe_load(yaml_str):
+    """安全載入 YAML 字符串，處理常見格式問題"""
+    try:
+        # 直接嘗試載入
+        return yaml.safe_load(yaml_str)
+    except yaml.YAMLError as e:
+        print(f"YAML 解析錯誤，嘗試修復: {str(e)}")
+        
+        # 修復常見的冒號缺失問題
+        lines = yaml_str.split("\n")
+        fixed_lines = []
+        
+        for line in lines:
+            # 如果行以空格開頭後接非空字符，且不包含冒號，則添加冒號
+            if line.strip() and line.startswith("  ") and ":" not in line:
+                # 檢查該行是否看起來像一個鍵（通常是一個短語）
+                fixed_line = line + ":"
+                fixed_lines.append(fixed_line)
+            else:
+                fixed_lines.append(line)
+        
+        fixed_yaml = "\n".join(fixed_lines)
+        
+        try:
+            return yaml.safe_load(fixed_yaml)
+        except yaml.YAMLError:
+            # 如果仍然失敗，將內容轉換為普通文本格式返回
+            print("YAML 修復失敗，轉換為普通文本")
+            result = {"text": yaml_str}
+            return result
+
 async def call_llm_streaming(
     messages: List[Dict[str, str]],
     temperature: float = None,
     max_tokens: Optional[int] = None,
     model: Optional[str] = None,
     retries: int = 3,
-    context_info: str = None  # 添加上下文信息參數，例如"生成主持人中..."
+    context_info: str = None,  # 添加上下文信息參數，例如"生成主持人中..."
+    idle_timeout: int = 30  # 新增數據流空閒超時參數，默認 30 秒
 ) -> str:
-    """調用 LLM API，支持串流響應和自動重試"""
+    """調用 LLM API，支持串流響應和自動重試，並檢測長時間無數據的情況"""
     if temperature is None:
         temperature = TEMPERATURE
         
@@ -159,39 +192,120 @@ async def call_llm_streaming(
             # 創建一個 Live 顯示區域來實時更新內容
             with Live(Panel("正在連接 API...", title=title, border_style="blue"), refresh_per_second=10) as live:
                 try:
-                    # 使用异步方法创建聊天补全，啟用串流模式
-                    stream = await client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stream=True  # 啟用串流模式
+                    # 初始化變量
+                    stream = None
+                    stream_task = None
+                    idle_check_task = None
+                    last_activity_time = time.time()
+                    idle_timeout_occurred = False
+                    
+                    # 定義一個內部函數來檢查空閒狀態
+                    async def check_idle_timeout():
+                        nonlocal idle_timeout_occurred, stream_task
+                        while True:
+                            current_idle_time = time.time() - last_activity_time
+                            if current_idle_time > idle_timeout:
+                                print(f"數據流空閒超過 {idle_timeout} 秒")
+                                idle_timeout_occurred = True
+                                
+                                # 取消主流程任務
+                                if stream_task and not stream_task.done():
+                                    stream_task.cancel()
+                                    
+                                # 結束檢查任務
+                                return
+                                
+                            await asyncio.sleep(1)
+                    
+                    # 定義處理流數據的函數
+                    async def process_stream():
+                        nonlocal full_response, last_activity_time
+                        
+                        # 使用異步方法創建聊天補全，啟用串流模式
+                        nonlocal stream
+                        stream = await client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            stream=True  # 啟用串流模式
+                        )
+                        
+                        # 顯示初始連接成功信息
+                        live.update(Panel("", title=title, border_style="green"))
+                        
+                        # 逐步接收並顯示串流內容
+                        async for chunk in stream:
+                            # 重置空閒計時器
+                            last_activity_time = time.time()
+                                
+                            if not chunk.choices:
+                                continue
+                                
+                            content_delta = chunk.choices[0].delta.content
+                            if content_delta is not None:
+                                full_response += content_delta
+                                # 更新顯示內容 (使用 Markdown 格式)
+                                try:
+                                    live.update(Panel(Markdown(full_response), title=title, border_style="green"))
+                                except Exception:
+                                    # 如果 Markdown 解析失敗，使用純文本顯示
+                                    live.update(Panel(Text(full_response), title=title, border_style="green"))
+                    
+                    # 啟動空閒檢查任務
+                    idle_check_task = asyncio.create_task(check_idle_timeout())
+                    
+                    # 啟動流處理任務
+                    stream_task = asyncio.create_task(process_stream())
+                    
+                    # 等待兩個任務中的任何一個完成
+                    done, pending = await asyncio.wait(
+                        [stream_task, idle_check_task],
+                        return_when=asyncio.FIRST_COMPLETED
                     )
                     
-                    # 顯示初始連接成功信息
-                    live.update(Panel("", title=title, border_style="green"))
-                    
-                    # 逐步接收並顯示串流內容
-                    async for chunk in stream:
-                        if not chunk.choices:
-                            continue
-                            
-                        content_delta = chunk.choices[0].delta.content
-                        if content_delta is not None:
-                            full_response += content_delta
-                            # 更新顯示內容 (使用 Markdown 格式)
+                    # 檢查是哪個任務完成了
+                    for task in done:
+                        if task == idle_check_task and idle_timeout_occurred:
+                            # 如果是空閒檢查任務完成且檢測到空閒超時
+                            raise asyncio.TimeoutError(f"數據流空閒超過 {idle_timeout} 秒")
+                        elif task == stream_task:
+                            # 如果是流處理任務完成，獲取結果或可能的異常
                             try:
-                                live.update(Panel(Markdown(full_response), title=title, border_style="green"))
-                            except Exception:
-                                # 如果 Markdown 解析失敗，使用純文本顯示
-                                live.update(Panel(Text(full_response), title=title, border_style="green"))
+                                await task
+                            except Exception as e:
+                                raise e
+                    
+                    # 取消所有尚未完成的任務
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
                 
+                except asyncio.TimeoutError:
+                    current_retry += 1
+                    if current_retry < retries:
+                        console.print(f"[yellow]API 數據流空閒超時 (重試 {current_retry}/{retries})")
+                        console.print(f"等待 2 秒後重試...")
+                        await asyncio.sleep(2)
+                        continue
+                    else:
+                        raise Exception("API 數據流空閒超時，已達到最大重試次數")
+                        
                 except Exception as stream_error:
                     # 如果串流模式出錯，提供視覺反饋並在下次迭代嘗試普通 API
                     live.update(Panel(f"串流 API 出錯: {str(stream_error)}\n嘗試使用普通 API...", title=title, border_style="red"))
                     await asyncio.sleep(2)  # 顯示錯誤信息一會兒
                     tried_fallback = True
                     raise ValueError(f"串流模式失敗: {str(stream_error)}")
+                finally:
+                    # 確保所有任務都被正確取消
+                    if 'idle_check_task' in locals() and idle_check_task and not idle_check_task.done():
+                        idle_check_task.cancel()
+                    if 'stream_task' in locals() and stream_task and not stream_task.done():
+                        stream_task.cancel()
             
             # 確保響應不為空
             if not full_response or full_response.strip() == "":

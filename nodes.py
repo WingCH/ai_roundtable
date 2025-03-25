@@ -8,7 +8,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.markdown import Markdown
 
-from utils import call_llm, call_llm_streaming, save_discussion_record
+from utils import call_llm, call_llm_streaming, save_discussion_record, yaml_safe_load
 
 # 動態引入 Node，避免循環引用
 try:
@@ -87,7 +87,9 @@ class ModeratorGeneratorNode(Node):
                 context_info="生成主持人中..."
             )
             moderator_yaml = moderator_response.strip().replace("```yaml", "").replace("```", "").strip()
-            moderator = yaml.safe_load(moderator_yaml)
+            
+            # 使用安全的 YAML 解析
+            moderator = yaml_safe_load(moderator_yaml)
             
             # 檢查是否成功解析主持人數據
             if not isinstance(moderator, dict) or not moderator.get('name'):
@@ -101,12 +103,11 @@ class ModeratorGeneratorNode(Node):
                 }
             
             return moderator
-                
         except Exception as e:
             print(f"生成主持人時發生錯誤: {str(e)}")
-            # 返回默認主持人作為備用
+            traceback.print_exc()
             return {
-                "name": "預設主持人",
+                "name": "默認主持人",
                 "background": "跨領域專家",
                 "style": "專業、平衡",
                 "expertise": "多學科整合",
@@ -154,17 +155,10 @@ class AgentGeneratorNode(Node):
     async def exec_async(self, question: str) -> List:
         # 生成專家
         experts_prompt = f"""
-        根據以下問題，生成 3-5 位相關領域的專家角色：
+        根據以下問題，生成3位不同專業背景、觀點立場的專家角色，他們將參與一個圓桌討論會：
         問題：{question}
         
-        請為每位專家提供以下信息：
-        1. 姓名
-        2. 專業領域
-        3. 專業背景
-        4. 性格特徵
-        5. 觀點立場
-        6. 發言風格
-        7. 互動偏好
+        請確保這些專家有不同的專業背景、個性特點和觀點立場，能夠從不同角度討論這個問題。
         
         以 YAML 格式輸出：
         ```yaml
@@ -172,11 +166,24 @@ class AgentGeneratorNode(Node):
           - name: 專家1姓名
             expertise: 專業領域
             background: 專業背景
-            personality: 性格特徵
+            personality: 個性特點
             stance: 觀點立場
-            style: 發言風格
-            interaction: 互動偏好
-          # ... 更多專家
+            style: 溝通風格
+            interaction: 互動特點
+          - name: 專家2姓名
+            expertise: 專業領域
+            background: 專業背景
+            personality: 個性特點
+            stance: 觀點立場
+            style: 溝通風格
+            interaction: 互動特點
+          - name: 專家3姓名
+            expertise: 專業領域
+            background: 專業背景
+            personality: 個性特點
+            stance: 觀點立場
+            style: 溝通風格
+            interaction: 互動特點
         ```
         """
         
@@ -186,7 +193,9 @@ class AgentGeneratorNode(Node):
                 context_info="生成專家團隊中..."
             )
             experts_yaml = experts_response.strip().replace("```yaml", "").replace("```", "").strip()
-            experts_data = yaml.safe_load(experts_yaml)
+            
+            # 使用安全的 YAML 解析
+            experts_data = yaml_safe_load(experts_yaml)
             
             # 檢查是否成功解析專家數據
             if not isinstance(experts_data, dict) or not experts_data.get('experts'):
@@ -222,13 +231,12 @@ class AgentGeneratorNode(Node):
                 ]
             
             return experts_data["experts"]
-                
         except Exception as e:
             print(f"生成專家時發生錯誤: {str(e)}")
-            # 返回默認專家作為備用
+            traceback.print_exc()
             return [
                 {
-                    "name": "預設專家A",
+                    "name": "專家A",
                     "expertise": "相關領域專家",
                     "background": "資深研究員",
                     "personality": "分析型思考",
@@ -237,7 +245,7 @@ class AgentGeneratorNode(Node):
                     "interaction": "喜歡深入討論"
                 },
                 {
-                    "name": "預設專家B",
+                    "name": "專家B",
                     "expertise": "相關領域專家",
                     "background": "業界實踐者",
                     "personality": "實用主義",
@@ -246,7 +254,7 @@ class AgentGeneratorNode(Node):
                     "interaction": "重視實際應用"
                 },
                 {
-                    "name": "預設專家C",
+                    "name": "專家C",
                     "expertise": "相關領域專家",
                     "background": "理論研究者",
                     "personality": "嚴謹細致",
@@ -435,7 +443,7 @@ class DiscussionNode(Node):
                 請提出本輪（第 {current_round} 輪）討論的重點和方向，包括：
                 1. 簡要回顧已討論的內容
                 2. 指出尚未充分探討的方面
-                3. 提出本輪討論應該關注的具體問題或角度
+                3. 本輪應該重點關注的問題
                 
                 請直接以主持人的身份發言，無需使用引號或特殊格式。
                 """
@@ -473,9 +481,8 @@ class DiscussionNode(Node):
                 # 保存專家回應
                 response_data = {
                     "role": "agent",
-                    "name": agent['name'],
-                    "expertise": agent['expertise'],
-                    "response": agent_response
+                    "agent": agent,
+                    "content": agent_response
                 }
                 responses.append(response_data)
                 
@@ -499,7 +506,7 @@ class DiscussionNode(Node):
             """
             
             for response in responses:
-                summary_prompt += f"{response['name']}（{response['expertise']}）: {response['response']}\n\n"
+                summary_prompt += f"{response['agent']['name']}（{response['agent']['expertise']}）: {response['content']}\n\n"
             
             summary_prompt += """
             請提供：
@@ -577,6 +584,7 @@ class DiscussionNode(Node):
             
         except Exception as e:
             print(f"討論過程中發生錯誤: {str(e)}")
+            traceback.print_exc()
             return {
                 "round_data": {
                     "round_number": current_round,
@@ -707,7 +715,7 @@ class SummaryNode(Node):
             if round_data.get('responses'):
                 summary_prompt += "專家觀點：\n"
                 for response in round_data['responses']:
-                    summary_prompt += f"- {response['name']}：{response['response']}\n"
+                    summary_prompt += f"- {response['agent']['name']}：{response['content']}\n"
             
             # 添加本輪總結
             if round_data.get('summary'):
@@ -734,11 +742,13 @@ class SummaryNode(Node):
             summary = await call_llm_streaming(
                 [{"role": "user", "content": summary_prompt}],
                 max_tokens=1500,
-                context_info="生成最終摘要中..."
+                context_info="生成最終摘要中...",
+                idle_timeout=60  # 為最終摘要生成設置更長的空閒超時時間
             )
             return summary
         except Exception as e:
             print(f"生成摘要時發生錯誤: {str(e)}")
+            traceback.print_exc()
             return f"無法生成摘要: {str(e)}"
     
     async def post_async(self, shared: Dict, prep_res: Dict, exec_res: str) -> str:
@@ -776,5 +786,6 @@ class SummaryNode(Node):
             return await self.post_async(shared, prep_res, exec_res)
         except Exception as e:
             print(f"SummaryNode 執行錯誤: {str(e)}")
+            traceback.print_exc()
             shared["error"] = f"SummaryNode: {str(e)}"
             return "error"
