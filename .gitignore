@@ -123,6 +123,6 @@ ENV/
 *.swo
 
 # Project specific
-records/
+# records/
 .env
 .DS_Store 
