@@ -8,7 +8,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.markdown import Markdown
 
-from utils import call_llm, save_discussion_record
+from utils import call_llm, call_llm_streaming, save_discussion_record
 
 # 動態引入 Node，避免循環引用
 try:
@@ -82,7 +82,10 @@ class ModeratorGeneratorNode(Node):
         """
         
         try:
-            moderator_response = await call_llm([{"role": "user", "content": moderator_prompt}])
+            moderator_response = await call_llm_streaming(
+                [{"role": "user", "content": moderator_prompt}],
+                context_info="生成主持人中..."
+            )
             moderator_yaml = moderator_response.strip().replace("```yaml", "").replace("```", "").strip()
             moderator = yaml.safe_load(moderator_yaml)
             
@@ -178,7 +181,10 @@ class AgentGeneratorNode(Node):
         """
         
         try:
-            experts_response = await call_llm([{"role": "user", "content": experts_prompt}])
+            experts_response = await call_llm_streaming(
+                [{"role": "user", "content": experts_prompt}],
+                context_info="生成專家團隊中..."
+            )
             experts_yaml = experts_response.strip().replace("```yaml", "").replace("```", "").strip()
             experts_data = yaml.safe_load(experts_yaml)
             
@@ -392,7 +398,10 @@ class DiscussionNode(Node):
                 請直接以主持人的身份發言，無需使用引號或特殊格式。
                 """
                 
-                opening_response = await call_llm([{"role": "user", "content": opening_prompt}])
+                opening_response = await call_llm_streaming(
+                    [{"role": "user", "content": opening_prompt}],
+                    context_info=f"主持人 {moderator['name']} 開場白"
+                )
                 
                 # 保存開場白
                 opening_data = {
@@ -431,7 +440,10 @@ class DiscussionNode(Node):
                 請直接以主持人的身份發言，無需使用引號或特殊格式。
                 """
                 
-                new_focus_response = await call_llm([{"role": "user", "content": new_focus_prompt}])
+                new_focus_response = await call_llm_streaming(
+                    [{"role": "user", "content": new_focus_prompt}],
+                    context_info=f"主持人 {moderator['name']} 提出第 {current_round} 輪討論重點"
+                )
                 
                 # 保存本輪討論重點
                 opening_data = {
@@ -453,7 +465,10 @@ class DiscussionNode(Node):
                 agent_prompt = self._build_agent_prompt(question, moderator, agent, history, current_round, opening_data, observer_input)
                 
                 # 獲取專家回應
-                agent_response = await call_llm([{"role": "user", "content": agent_prompt}])
+                agent_response = await call_llm_streaming(
+                    [{"role": "user", "content": agent_prompt}],
+                    context_info=f"專家 {agent['name']} 發言中"
+                )
                 
                 # 保存專家回應
                 response_data = {
@@ -495,7 +510,10 @@ class DiscussionNode(Node):
             請直接以主持人的身份發言，無需使用引號或特殊格式。
             """
             
-            round_summary = await call_llm([{"role": "user", "content": summary_prompt}])
+            round_summary = await call_llm_streaming(
+                [{"role": "user", "content": summary_prompt}],
+                context_info=f"主持人總結第 {current_round} 輪討論"
+            )
             
             # 顯示總結（Markdown 格式）
             summary_md = f"## 主持人總結\n\n{round_summary}"
@@ -531,7 +549,10 @@ class DiscussionNode(Node):
             請回答：「繼續討論」或「結束討論」，並簡要說明理由。
             """
             
-            evaluation_response = await call_llm([{"role": "user", "content": evaluation_prompt}])
+            evaluation_response = await call_llm_streaming(
+                [{"role": "user", "content": evaluation_prompt}],
+                context_info="評估討論進展"
+            )
             
             # 解析評估結果
             should_continue = "繼續討論" in evaluation_response
@@ -710,7 +731,11 @@ class SummaryNode(Node):
         
         try:
             # 生成摘要
-            summary = await call_llm([{"role": "user", "content": summary_prompt}], max_tokens=1500)
+            summary = await call_llm_streaming(
+                [{"role": "user", "content": summary_prompt}],
+                max_tokens=1500,
+                context_info="生成最終摘要中..."
+            )
             return summary
         except Exception as e:
             print(f"生成摘要時發生錯誤: {str(e)}")
