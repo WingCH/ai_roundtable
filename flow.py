@@ -1,6 +1,5 @@
 import asyncio
 from pocketflow import Flow, AsyncFlow, Node
-from nodes import InputNode, ModeratorGeneratorNode, AgentGeneratorNode, SessionStartNode, DiscussionNode, SummaryNode
 
 class FlowRunner:
     """流程運行器"""
@@ -70,13 +69,22 @@ class FlowRunner:
 class EndNode:
     """表示流程結束的節點"""
     async def run_async(self, shared):
-        print("流程結束")
+        from rich.console import Console
+        from rich.markdown import Markdown
+        
+        console = Console()
+        end_md = "# 討論流程已結束"
+        console.print(Markdown(end_md))
+        
         if not shared.get("status"):
             shared["status"] = "completed"
         return "end"
 
 def create_discussion_flow():
     """創建完整的討論流程"""
+    # 動態引入，避免循環引用
+    from nodes import InputNode, ModeratorGeneratorNode, AgentGeneratorNode, SessionStartNode, DiscussionNode, SummaryNode
+    
     flow = FlowRunner()
     
     # 創建節點

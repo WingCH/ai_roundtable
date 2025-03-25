@@ -1,9 +1,27 @@
-from typing import Dict, List, Optional
-from pocketflow import Node
-from utils import call_llm, save_discussion_record
+import asyncio
+import traceback
+import os
 import yaml
 import json
+from typing import Dict, List, Optional
 from datetime import datetime
+from rich.console import Console
+from rich.markdown import Markdown
+
+from utils import call_llm, save_discussion_record
+
+# 動態引入 Node，避免循環引用
+try:
+    from flow import Node
+except ImportError:
+    # 用於開發和測試的臨時 Node 類
+    class Node:
+        """臨時 Node 類，用於開發和測試"""
+        async def run_async(self, shared):
+            return await self.post_async(shared, None, None)
+        
+        async def post_async(self, shared, prep_res, exec_res):
+            return "default"
 
 class InputNode(Node):
     """接收使用者輸入的問題"""
@@ -94,7 +112,23 @@ class ModeratorGeneratorNode(Node):
     
     async def post_async(self, shared: Dict, prep_res: str, exec_res: Dict) -> str:
         shared["moderator"] = exec_res
-        print(f"已生成主持人: {exec_res['name']}")
+        
+        # 將主持人信息轉換為 Markdown 格式
+        markdown_content = []
+        markdown_content.append("## 會議主持人")
+        markdown_content.append(f"\n### {exec_res['name']}")
+        markdown_content.append(f"- **專業背景**：{exec_res.get('background', '未提供')}")
+        markdown_content.append(f"- **主持風格**：{exec_res.get('style', '未提供')}")
+        markdown_content.append(f"- **專業領域**：{exec_res.get('expertise', '未提供')}")
+        markdown_content.append(f"- **性格特徵**：{exec_res.get('personality', '未提供')}")
+        
+        # 將 Markdown 內容轉換為字符串
+        markdown_string = "\n".join(markdown_content)
+        
+        # 使用 Rich 顯示 Markdown
+        console = Console()
+        console.print(Markdown(markdown_string))
+        
         return "default"
         
     async def run_async(self, shared: Dict) -> str:
@@ -218,7 +252,28 @@ class AgentGeneratorNode(Node):
     
     async def post_async(self, shared: Dict, prep_res: str, exec_res: List) -> str:
         shared["agents"] = exec_res
-        print(f"已生成 {len(exec_res)} 位專家")
+        
+        # 將專家信息轉換為 Markdown 格式
+        markdown_content = []
+        markdown_content.append("## 已生成專家團隊")
+        
+        for agent in exec_res:
+            markdown_content.append(f"\n### {agent['name']}")
+            markdown_content.append(f"- **專業領域**：{agent.get('expertise', '未提供')}")
+            markdown_content.append(f"- **專業背景**：{agent.get('background', '未提供')}")
+            markdown_content.append(f"- **性格特徵**：{agent.get('personality', '未提供')}")
+            markdown_content.append(f"- **觀點立場**：{agent.get('stance', '未提供')}")
+            markdown_content.append(f"- **發言風格**：{agent.get('style', '未提供')}")
+            markdown_content.append(f"- **互動偏好**：{agent.get('interaction', '未提供')}")
+        
+        # 將 Markdown 內容轉換為字符串
+        markdown_string = "\n".join(markdown_content)
+        
+        # 使用 Rich 顯示 Markdown
+        console = Console()
+        console.print(Markdown(markdown_string))
+        
+        print(f"\n總共生成了 {len(exec_res)} 位專家")
         return "default"
         
     async def run_async(self, shared: Dict) -> str:
@@ -253,12 +308,30 @@ class SessionStartNode(Node):
     async def post_async(self, shared: Dict, prep_res: Dict, exec_res: Dict) -> str:
         shared["discussion_history"] = exec_res["discussion_history"]
         shared["observer_inputs"] = exec_res["observer_inputs"]
-        print("\n--- 討論會話準備完成 ---")
-        print(f"主持人: {shared['moderator']['name']}")
-        print("專家小組:")
+        
+        # 將會話準備信息轉換為 Markdown 格式
+        markdown_content = []
+        markdown_content.append("# 討論會話準備完成")
+        
+        # 添加主持人信息
+        moderator = shared["moderator"]
+        markdown_content.append(f"\n## 本次討論主持人")
+        markdown_content.append(f"### {moderator['name']}")
+        markdown_content.append(f"- **專業背景**：{moderator.get('background', '未提供')}")
+        markdown_content.append(f"- **主持風格**：{moderator.get('style', '未提供')}")
+        
+        # 添加專家信息摘要
+        markdown_content.append(f"\n## 專家小組成員")
         for agent in shared["agents"]:
-            print(f"- {agent['name']} ({agent['expertise']})")
-        print("\n--- 開始討論 ---\n")
+            markdown_content.append(f"- **{agent['name']}** ({agent.get('expertise', '未提供')})")
+        
+        markdown_content.append("\n## 開始討論")
+        
+        # 將 Markdown 內容轉換為字符串並顯示
+        markdown_string = "\n".join(markdown_content)
+        console = Console()
+        console.print(Markdown(markdown_string))
+        
         return "default"
     
     async def run_async(self, shared: Dict) -> str:
@@ -285,6 +358,8 @@ class DiscussionNode(Node):
         }
     
     async def exec_async(self, data: Dict) -> Dict:
+        console = Console()
+        
         question = data["question"]
         moderator = data["moderator"]
         agents = data["agents"]
@@ -293,7 +368,10 @@ class DiscussionNode(Node):
         
         # 確定當前討論輪次
         current_round = len(history) + 1
-        print(f"\n=== 第 {current_round} 輪討論 ===\n")
+        
+        # 顯示當前輪次標題
+        round_title = f"# 第 {current_round} 輪討論"
+        console.print(Markdown(round_title))
         
         # 檢查是否有觀察者輸入
         has_observer_input = len(observer_inputs) > 0 and len(observer_inputs) >= current_round - 1
@@ -363,8 +441,10 @@ class DiscussionNode(Node):
                     "focus": f"第 {current_round} 輪討論重點"
                 }
             
-            # 打印主持人開場白或引導語
-            print(f"【主持人 {moderator['name']}】: {opening_data['opening']}\n")
+            # 顯示主持人開場白或引導語
+            moderator_md = f"## 主持人 {moderator['name']}\n\n{opening_data['opening']}"
+            console.print(Markdown(moderator_md))
+            console.print()
             
             # 專家依次發言
             responses = []
@@ -384,8 +464,10 @@ class DiscussionNode(Node):
                 }
                 responses.append(response_data)
                 
-                # 打印專家發言
-                print(f"【{agent['name']}】({agent['expertise']}): {agent_response}\n")
+                # 顯示專家發言（Markdown 格式）
+                agent_md = f"## {agent['name']} ({agent['expertise']})\n\n{agent_response}"
+                console.print(Markdown(agent_md))
+                console.print()
             
             # 主持人總結本輪討論
             summary_prompt = f"""
@@ -415,15 +497,10 @@ class DiscussionNode(Node):
             
             round_summary = await call_llm([{"role": "user", "content": summary_prompt}])
             
-            # 保存總結
-            summary_data = {
-                "role": "moderator",
-                "name": moderator['name'],
-                "summary": round_summary
-            }
-            
-            # 打印總結
-            print(f"【主持人總結】: {round_summary}\n")
+            # 顯示總結（Markdown 格式）
+            summary_md = f"## 主持人總結\n\n{round_summary}"
+            console.print(Markdown(summary_md))
+            console.print()
             
             # 評估討論是否需要繼續
             evaluation_prompt = f"""
@@ -464,7 +541,11 @@ class DiscussionNode(Node):
                 "round_number": current_round,
                 "opening": opening_data,
                 "responses": responses,
-                "summary": summary_data,
+                "summary": {
+                    "role": "moderator",
+                    "name": moderator['name'],
+                    "summary": round_summary
+                },
                 "evaluation": evaluation_response
             }
             
@@ -533,12 +614,19 @@ class DiscussionNode(Node):
         
         shared["discussion_history"].append(round_data)
         
+        # 創建 Rich Console 對象
+        console = Console()
+        
         # 根據評估結果決定是否繼續討論
         if should_continue:
-            print(f"\n評估結果: 討論應繼續進行下一輪\n")
+            evaluation_md = "## 評估結果\n\n討論尚未結束，將繼續進行下一輪討論。"
+            console.print(Markdown(evaluation_md))
+            console.print()
             return "continue_discussion"
         else:
-            print(f"\n評估結果: 討論已充分，準備生成最終摘要\n")
+            evaluation_md = "## 評估結果\n\n討論已經充分展開，準備生成最終摘要。"
+            console.print(Markdown(evaluation_md))
+            console.print()
             return "end_discussion"
             
     async def run_async(self, shared: Dict) -> str:
@@ -633,10 +721,22 @@ class SummaryNode(Node):
         shared["summary"] = exec_res
         shared["status"] = "completed"
         
-        # 打印摘要
-        print("\n=== 最終摘要 ===\n")
-        print(exec_res)
-        print("\n================\n")
+        # 構建 Markdown 格式的最終摘要
+        markdown_content = []
+        markdown_content.append("# 討論最終摘要")
+        markdown_content.append(f"\n## 討論問題")
+        markdown_content.append(shared["question"])
+        markdown_content.append("\n## 討論結論")
+        markdown_content.append(exec_res)
+        
+        # 將 Markdown 內容轉換為字符串並顯示
+        markdown_string = "\n".join(markdown_content)
+        console = Console()
+        console.print(Markdown(markdown_string))
+        
+        # 顯示完成信息
+        complete_md = "\n## 討論已結束"
+        console.print(Markdown(complete_md))
         
         # 保存討論記錄
         save_discussion_record(shared)

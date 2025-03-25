@@ -7,6 +7,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 import time
 import asyncio
+from rich.console import Console
+from rich.markdown import Markdown
 
 # 載入環境變數
 load_dotenv()
@@ -30,7 +32,8 @@ client = AsyncOpenAI(
 AVAILABLE_MODELS = [
     # "deepseek/deepseek-r1",
     # "openai/chatgpt-4o-latest",
-    "anthropic/claude-3.7-sonnet"
+    # "anthropic/claude-3.7-sonnet",
+    "deepseek/deepseek-chat-v3-0324"
 ]
 
 # 模型輪詢計數器
@@ -116,8 +119,8 @@ async def call_llm(
             print(f"等待 {retry_delay} 秒後重試...")
             await asyncio.sleep(retry_delay)
 
-def save_discussion_record(shared: Dict) -> None:
-    """保存討論記錄"""
+def save_discussion_record(shared: Dict) -> str:
+    """保存討論記錄（YAML 和 Markdown 格式）"""
     try:
         # 確保記錄目錄存在
         os.makedirs("records", exist_ok=True)
@@ -142,7 +145,9 @@ def save_discussion_record(shared: Dict) -> None:
         # 生成檔案名稱
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         question_slug = shared["question"][:20].replace(" ", "_").replace("/", "_").replace("\\", "_")
-        filename = f"records/discussion_{question_slug}_{timestamp}.yaml"
+        filename_base = f"records/discussion_{question_slug}_{timestamp}"
+        yaml_filename = f"{filename_base}.yaml"
+        md_filename = f"{filename_base}.md"
         
         # 準備記錄數據
         record = {
@@ -163,11 +168,82 @@ def save_discussion_record(shared: Dict) -> None:
         }
         
         # 保存為 YAML 檔案
-        with open(filename, "w", encoding="utf-8") as f:
+        with open(yaml_filename, "w", encoding="utf-8") as f:
             yaml.dump(record, f, allow_unicode=True, sort_keys=False)
+        
+        # 生成 Markdown 格式記錄
+        md_content = []
+        
+        # 標題和基本信息
+        md_content.append("# AI 圓桌會議完整記錄")
+        md_content.append(f"**時間**：{shared['timestamp']}")
+        md_content.append(f"**問題**：{shared['question']}")
+        md_content.append(f"**狀態**：{shared.get('status', '未知')}")
+        
+        # 主持人信息
+        md_content.append("\n## 主持人")
+        moderator = shared["moderator"]
+        md_content.append(f"**姓名**：{moderator.get('name', '未知')}")
+        md_content.append(f"**背景**：{moderator.get('background', '未提供')}")
+        md_content.append(f"**風格**：{moderator.get('style', '未提供')}")
+        
+        # 專家信息
+        md_content.append("\n## 專家團隊")
+        for agent in shared["agents"]:
+            md_content.append(f"\n### {agent.get('name', '未知專家')}")
+            md_content.append(f"- **專業**：{agent.get('expertise', '未提供')}")
+            md_content.append(f"- **背景**：{agent.get('background', '未提供')}")
+            md_content.append(f"- **立場**：{agent.get('stance', '未提供')}")
+        
+        # 詳細討論過程
+        md_content.append("\n## 討論過程")
+        
+        for round_data in shared.get("discussion_history", []):
+            round_num = round_data.get("round_number", "?")
+            md_content.append(f"\n### 第 {round_num} 輪討論")
             
-        print(f"討論記錄已保存至：{filename}")
-        return filename
+            # 開場白
+            opening = round_data.get("opening", {})
+            if opening:
+                md_content.append("\n#### 主持人開場")
+                md_content.append(f"{opening.get('opening', '未提供')}")
+                md_content.append(f"\n**討論重點**：{opening.get('focus', '未提供')}")
+            
+            # 專家發言
+            responses = round_data.get("responses", [])
+            if responses:
+                md_content.append("\n#### 專家發言")
+                for resp in responses:
+                    if isinstance(resp, dict):
+                        agent_name = resp.get("agent", {}).get("name", "未知專家")
+                        content = resp.get("content", "未提供發言")
+                        md_content.append(f"\n##### {agent_name}")
+                        md_content.append(content)
+            
+            # 本輪總結
+            summary = round_data.get("summary", {})
+            if summary:
+                md_content.append("\n#### 本輪總結")
+                md_content.append(f"{summary.get('summary', '未提供總結')}")
+        
+        # 觀察者輸入
+        observer_inputs = shared.get("observer_inputs", [])
+        if observer_inputs:
+            md_content.append("\n## 觀察者輸入")
+            for i, input_data in enumerate(observer_inputs, 1):
+                md_content.append(f"\n### 輸入 {i}")
+                md_content.append(f"{input_data}")
+        
+        # 最終總結
+        md_content.append("\n## 最終結論")
+        md_content.append(shared.get("summary", "未生成摘要"))
+        
+        # 保存 Markdown 文件
+        with open(md_filename, "w", encoding="utf-8") as f:
+            f.write("\n".join(md_content))
+            
+        print(f"討論記錄已保存至：\n- YAML: {yaml_filename}\n- Markdown: {md_filename}")
+        return yaml_filename
     except Exception as e:
         print(f"保存記錄時發生錯誤：{str(e)}")
         try:
@@ -181,76 +257,97 @@ def save_discussion_record(shared: Dict) -> None:
         return None
 
 def print_summary(shared: Dict) -> None:
-    """格式化並打印會議摘要"""
+    """格式化並打印會議摘要（使用 Rich 庫渲染 Markdown）"""
     try:
-        print("\n=== AI 圓桌會議摘要 ===")
+        # 創建 Rich Console 對象
+        console = Console()
+        
+        # 構建 Markdown 格式的摘要字符串
+        markdown_content = []
+        
+        # 標題和基本信息
+        markdown_content.append("# AI 圓桌會議摘要")
         
         # 獲取基本信息，使用安全的訪問方式
         timestamp = shared.get('timestamp', '未記錄')
         question = shared.get('question', '未提供討論主題')
-        print(f"會議時間：{timestamp}")
-        print(f"討論主題：{question}")
+        markdown_content.append(f"**會議時間**：{timestamp}")
+        markdown_content.append(f"**討論主題**：{question}")
         
         # 處理主持人信息
-        print("\n主持人：")
+        markdown_content.append("\n## 主持人")
         moderator = shared.get("moderator", {})
         if isinstance(moderator, dict):
-            print(f"- 姓名：{moderator.get('name', '未知')}")
-            print(f"- 專業背景：{moderator.get('background', '未提供')}")
-            print(f"- 主持風格：{moderator.get('style', '未提供')}")
+            markdown_content.append(f"- **姓名**：{moderator.get('name', '未知')}")
+            markdown_content.append(f"- **專業背景**：{moderator.get('background', '未提供')}")
+            markdown_content.append(f"- **主持風格**：{moderator.get('style', '未提供')}")
         else:
-            print("- 主持人信息無效")
+            markdown_content.append("- 主持人信息無效")
         
         # 處理專家信息
         agents = shared.get("agents", [])
         if agents and isinstance(agents, list):
-            print("\n專家：")
+            markdown_content.append("\n## 專家")
             for agent in agents:
                 if not isinstance(agent, dict):
                     continue
-                print(f"\n- {agent.get('name', '未知專家')}")
-                print(f"  專業領域：{agent.get('expertise', '未提供')}")
-                print(f"  專業背景：{agent.get('background', '未提供')}")
-                print(f"  觀點立場：{agent.get('stance', '未提供')}")
+                markdown_content.append(f"\n### {agent.get('name', '未知專家')}")
+                markdown_content.append(f"- **專業領域**：{agent.get('expertise', '未提供')}")
+                markdown_content.append(f"- **專業背景**：{agent.get('background', '未提供')}")
+                markdown_content.append(f"- **觀點立場**：{agent.get('stance', '未提供')}")
         
         # 處理討論歷史
         discussion_history = shared.get("discussion_history", [])
         if discussion_history and isinstance(discussion_history, list):
-            print("\n討論重點：")
+            markdown_content.append("\n## 討論重點")
             for round_data in discussion_history:
                 if not isinstance(round_data, dict):
                     continue
-                print(f"\n第 {round_data.get('round_number', '?')} 輪：")
+                markdown_content.append(f"\n### 第 {round_data.get('round_number', '?')} 輪")
                 opening = round_data.get('opening', {})
                 if opening and isinstance(opening, dict):
-                    print(f"- 開場：{opening.get('opening', '未提供')}")
-                    print(f"- 重點：{opening.get('focus', '未提供')}")
+                    markdown_content.append(f"- **開場**：{opening.get('opening', '未提供')}")
+                    markdown_content.append(f"- **重點**：{opening.get('focus', '未提供')}")
                 
                 round_summary = round_data.get('summary', {})
                 if round_summary and isinstance(round_summary, dict):
-                    print(f"- 總結：{round_summary.get('summary', '未提供')}")
+                    markdown_content.append(f"- **總結**：{round_summary.get('summary', '未提供')}")
         
         # 處理總結
         summary = shared.get("summary")
         if summary:
-            print("\n最終結論：")
-            print(summary)
+            markdown_content.append("\n## 最終結論")
+            markdown_content.append(summary)
         else:
-            print("\n未生成最終結論")
+            markdown_content.append("\n## 最終結論")
+            markdown_content.append("未生成最終結論")
             
         # 討論狀態
         status = shared.get("status", "未知")
-        print(f"\n討論狀態：{status}")
+        markdown_content.append(f"\n**討論狀態**：{status}")
         
         # 顯示錯誤（如果有）
         error = shared.get("error")
         if error:
-            print(f"\n討論錯誤：{error}")
+            markdown_content.append(f"\n**討論錯誤**：{error}")
+        
+        # 轉換為 Markdown 字符串
+        markdown_string = "\n".join(markdown_content)
+        
+        # 保存 Markdown 文件
+        os.makedirs("records", exist_ok=True)
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        md_filename = f"records/summary_{current_time}.md"
+        
+        with open(md_filename, "w", encoding="utf-8") as f:
+            f.write(markdown_string)
+        
+        # 使用 Rich 庫渲染 Markdown
+        markdown = Markdown(markdown_string)
+        console.print(markdown)
+        
+        # 顯示保存信息
+        print(f"\n摘要已保存為 Markdown 文件：{md_filename}")
             
     except Exception as e:
-        print(f"\n顯示摘要時發生錯誤：{str(e)}")
-        print("嘗試顯示原始數據：")
-        try:
-            print(json.dumps(shared, ensure_ascii=False, indent=2, default=str)[:500] + "...")
-        except:
-            print("無法顯示原始數據") 
+        print(f"打印摘要時發生錯誤：{str(e)}") 

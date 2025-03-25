@@ -169,7 +169,7 @@ async def main():
     # 保存記錄
     record_file = save_discussion_record(shared)
     if record_file:
-        print(f"\n完整討論記錄已保存至: {record_file}")
+        print(f"\n完整討論記錄已保存，您可以查看 Markdown 格式文件了解詳細內容。")
     else:
         print("\n警告: 無法保存完整討論記錄")
     
