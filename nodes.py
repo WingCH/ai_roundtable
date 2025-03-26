@@ -527,6 +527,15 @@ class DiscussionNode(Node):
             console.print(Markdown(summary_md))
             console.print()
             
+            # 提示觀察者是否有輸入
+            console.print(Markdown(f"## 觀察者意見\n\n主持人 {moderator['name']} 轉向您詢問：「觀察者，您對本輪討論有什麼看法或補充嗎？如果沒有，請直接按下 Enter 鍵，我們將繼續討論。」"))
+            observer_comment = input("> ").strip()
+            
+            # 保存觀察者輸入
+            while len(observer_inputs) < current_round:
+                observer_inputs.append(None)
+            observer_inputs[current_round - 1] = observer_comment if observer_comment else None
+            
             # 評估討論是否需要繼續
             evaluation_prompt = f"""
             你是一位資深的討論評估專家。請評估以下專家討論是否已經充分探討了主題，是否需要繼續討論。
@@ -543,10 +552,17 @@ class DiscussionNode(Node):
                 if round_data.get('summary'):
                     evaluation_prompt += f"第 {i+1} 輪總結：{round_data['summary'].get('summary', '無總結')}\n\n"
             
-            # 添加當前輪次總結
+            # 添加當前輪次總結和觀察者輸入（如果有）
             evaluation_prompt += f"""
             本輪總結：{round_summary}
+            """
             
+            if observer_comment:
+                evaluation_prompt += f"""
+                觀察者提出的觀點或疑問：{observer_comment}
+                """
+            
+            evaluation_prompt += f"""
             評估討論是否應該結束的標準：
             1. 是否已經全面覆蓋了問題的各個方面
             2. 是否達成了一定程度的共識或清晰地表達了不同觀點
@@ -579,7 +595,8 @@ class DiscussionNode(Node):
             
             return {
                 "round_data": round_data,
-                "should_continue": should_continue
+                "should_continue": should_continue,
+                "observer_inputs": observer_inputs
             }
             
         except Exception as e:
@@ -590,7 +607,8 @@ class DiscussionNode(Node):
                     "round_number": current_round,
                     "error": str(e)
                 },
-                "should_continue": False
+                "should_continue": False,
+                "observer_inputs": observer_inputs
             }
     
     def _build_agent_prompt(self, question, moderator, agent, history, current_round, opening_data, observer_input=None):
@@ -642,6 +660,9 @@ class DiscussionNode(Node):
             shared["discussion_history"] = []
         
         shared["discussion_history"].append(round_data)
+        
+        # 更新觀察者輸入
+        shared["observer_inputs"] = exec_res.get("observer_inputs", shared.get("observer_inputs", []))
         
         # 創建 Rich Console 對象
         console = Console()
